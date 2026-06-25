@@ -2,7 +2,7 @@
 
 GPU deep-learning pipeline for PRJ4: moving-area abstraction and target tracking in fisheye video.
 
-The main system uses RAFT optical flow, Ultralytics YOLO segmentation priors, a supervised two-stream `FisheyeMotionNet`, SAM2.1 mask refinement, fisheye geometry maps, region-wise evaluation, and short-range target tracking. Traditional FrameDiff and Farneback methods are kept only as baselines.
+The main system uses RAFT optical flow, Ultralytics YOLO segmentation priors, DINOv2 semantic motion priors, boundary-aware cues, a supervised two-stream `FisheyeMotionNet`, uncertainty-aware test-time augmentation, SAM2.1 mask refinement, fisheye geometry maps, region-wise evaluation, and short-range target tracking. Traditional FrameDiff and Farneback methods are kept only as baselines.
 
 ## What Is Included
 
@@ -17,6 +17,7 @@ Large files are intentionally not committed:
 - Dataset: `homework2.zip` and extracted `data/homework2/`.
 - Trained checkpoints: `checkpoints/*.pth`.
 - Downloaded weights: `yolo26n-seg.pt`, RAFT cache, SAM2.1 checkpoint.
+- Torch hub weights: DINOv2 semantic encoder cache.
 - Generated experiment outputs under `outputs/`.
 - Cloned SAM2 repository under `third_party/sam2/`.
 
@@ -88,6 +89,7 @@ This prepares all required deep modules:
 
 - Torchvision RAFT large weights are downloaded through `torchvision.models.optical_flow.raft_large(weights=DEFAULT)`.
 - Ultralytics downloads `yolo26n-seg.pt`.
+- Torch hub downloads DINOv2 `dinov2_vits14_reg`.
 - `facebookresearch/sam2` is cloned to `third_party/sam2`.
 - `sam2.1_hiera_base_plus.pt` is downloaded to `third_party/sam2/checkpoints/`.
 
@@ -111,10 +113,11 @@ This runs the complete experiment sequence:
 
 1. Dataset validation.
 2. RAFT and YOLO feature extraction.
-3. `FisheyeMotionNet` training.
-4. Baseline evaluation: FrameDiff, Farneback, RAFT-only, YOLO-only, and SAM2 prompted by FrameDiff.
-5. Main and ablation evaluation: FisheyeMotionNet variants and full RAFT+YOLO+FisheyeMotionNet+SAM2 model.
-6. Short-range tracking, overlays, region metrics, and report figures.
+3. DINOv2 semantic saliency/change prior extraction and boundary prior extraction.
+4. `FisheyeMotionNet` training with boundary-weighted supervision.
+5. Baseline evaluation: FrameDiff, Farneback, RAFT-only, YOLO-only, and SAM2 prompted by FrameDiff.
+6. Main and ablation evaluation: FisheyeMotionNet variants and full RAFT+YOLO+DINO+FisheyeMotionNet+SAM2 model.
+7. Short-range tracking, overlays, region metrics, and report figures.
 
 Key generated files:
 
@@ -158,6 +161,24 @@ Edge F1   0.2897
 
 See `PRJ4_report_fisheye_motion_ai.md` for the full experimental discussion, ablations, failure cases, and region-wise analysis.
 
+The newer research-oriented branch adds DINOv2 semantic priors, an edge prior, TTA uncertainty, and an uncertainty-weighted fusion stage. Its final method name in `metrics_summary.csv` is:
+
+```text
+Full-RAFT-YOLO-DINO-FMN-SAM2
+```
+
+Latest optimized GPU run:
+
+```text
+IoU       0.3131
+Precision 0.3613
+Recall    0.5830
+F1        0.3932
+Center F1 0.4012
+Middle F1 0.3471
+Edge F1   0.2915
+```
+
 ## Configuration
 
 Edit `configs/default.yaml` for common changes:
@@ -168,6 +189,8 @@ Edit `configs/default.yaml` for common changes:
 - `data_root`: extracted dataset directory.
 - `output_root`: generated result directory.
 - `checkpoint_dir`: model checkpoint directory.
+- `dino.enabled` and `dino.model`: DINOv2 semantic prior extraction.
+- `fusion`: weights for network, RAFT, YOLO, DINO, edge, and uncertainty penalty.
 - `sam2.repo_dir` and `sam2.checkpoint`: SAM2 code and checkpoint locations.
 
 Relative paths are resolved from the repository root. Absolute paths are also supported.

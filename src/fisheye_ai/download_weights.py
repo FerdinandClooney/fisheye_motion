@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from .config import load_config
-from .deep_modules import RaftFlow, Sam2Refiner, YoloObjectness
+from .deep_modules import DinoSemanticPrior, RaftFlow, Sam2Refiner, YoloObjectness
 from .utils import require_cuda
 
 
@@ -59,6 +59,9 @@ def main() -> None:
     _ = RaftFlow(cfg["raft"].get("weights", "DEFAULT"))
     print("Downloading/loading YOLO weights...")
     _ = YoloObjectness(cfg["yolo"]["model"], cfg["yolo"]["imgsz"], cfg["yolo"]["conf"])
+    if cfg.get("dino", {}).get("enabled", True):
+        print("Downloading/loading DINOv2 weights...")
+        _ = DinoSemanticPrior(cfg.get("dino", {}).get("model", "dinov2_vits14_reg"))
     print("Loading SAM2 checkpoint...")
     _ = Sam2Refiner(cfg["sam2"]["repo_dir"], cfg["sam2"]["checkpoint"], cfg["sam2"]["config"])
     print("All required deep weights are available.")

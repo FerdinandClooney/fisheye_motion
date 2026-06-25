@@ -91,6 +91,50 @@ class YoloObjectness:
         return np.clip(mask, 0.0, 1.0), boxes_out
 
 
+class DinoSemanticPrior:
+    """DINOv2 patch features converted into semantic saliency and temporal change maps."""
+
+    def __init__(self, model_name: str = "dinov2_vits14_reg") -> None:
+        require_cuda()
+        self.device = torch.device("cuda")
+        self.patch = 14
+        self.model = torch.hub.load("facebookresearch/dinov2", model_name).to(self.device).eval()
+        self.mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+
+    def _prepare(self, rgb: np.ndarray) -> tuple[torch.Tensor, tuple[int, int]]:
+        h, w = rgb.shape[:2]
+        hh = max(self.patch, (h // self.patch) * self.patch)
+        ww = max(self.patch, (w // self.patch) * self.patch)
+        x = _to_tensor_rgb(cv2.resize(rgb, (ww, hh), interpolation=cv2.INTER_AREA), self.device)
+        return (x - self.mean) / self.std, (hh // self.patch, ww // self.patch)
+
+    @torch.inference_mode()
+    def _features(self, rgb: np.ndarray) -> tuple[torch.Tensor, tuple[int, int]]:
+        x, grid = self._prepare(rgb)
+        out = self.model.forward_features(x)
+        tokens = out["x_norm_patchtokens"][0]
+        tokens = F.normalize(tokens, dim=1)
+        return tokens.view(grid[0], grid[1], -1), grid
+
+    @torch.inference_mode()
+    def __call__(self, prev_rgb: np.ndarray, curr_rgb: np.ndarray) -> np.ndarray:
+        h, w = curr_rgb.shape[:2]
+        prev_feat, grid = self._features(prev_rgb)
+        curr_feat, _ = self._features(curr_rgb)
+        gh, gw = grid
+
+        border = torch.cat([curr_feat[0], curr_feat[-1], curr_feat[:, 0], curr_feat[:, -1]], dim=0)
+        proto = F.normalize(border.mean(dim=0, keepdim=True), dim=1)
+        saliency = 1.0 - torch.matmul(curr_feat.view(-1, curr_feat.shape[-1]), proto.t()).view(gh, gw)
+        change = 1.0 - torch.sum(prev_feat * curr_feat, dim=-1)
+
+        maps = torch.stack([saliency, change], dim=0)[None]
+        maps = F.interpolate(maps, size=(h, w), mode="bilinear", align_corners=False)[0]
+        maps_np = maps.detach().cpu().numpy().transpose(1, 2, 0)
+        return np.dstack([normalize01(maps_np[..., 0]), normalize01(maps_np[..., 1])]).astype(np.float32)
+
+
 class Sam2Refiner:
     def __init__(self, repo_dir: str | Path, checkpoint: str | Path, config: str, device: str = "cuda") -> None:
         require_cuda()

@@ -68,6 +68,8 @@ class FisheyeMotionDataset(Dataset):
         require_deep_features: bool = True,
         use_raft: bool = True,
         use_yolo: bool = True,
+        use_dino: bool = True,
+        use_edge: bool = True,
         use_geometry: bool = True,
     ) -> None:
         self.samples = samples
@@ -76,6 +78,8 @@ class FisheyeMotionDataset(Dataset):
         self.require_deep_features = require_deep_features
         self.use_raft = use_raft
         self.use_yolo = use_yolo
+        self.use_dino = use_dino
+        self.use_edge = use_edge
         self.use_geometry = use_geometry
 
     def __len__(self) -> int:
@@ -106,12 +110,26 @@ class FisheyeMotionDataset(Dataset):
                 if yolo.shape[:2] != (h, w):
                     yolo = cv2.resize(yolo, (w, h), interpolation=cv2.INTER_LINEAR)
                 chans.append(yolo[..., None])
+            if self.use_dino:
+                dino = data["dino_prior"].astype(np.float32) if "dino_prior" in data else np.zeros((h, w, 2), dtype=np.float32)
+                if dino.shape[:2] != (h, w):
+                    dino = cv2.resize(dino, (w, h), interpolation=cv2.INTER_LINEAR)
+                chans.append(dino)
+            if self.use_edge:
+                edge = data["edge_prior"].astype(np.float32) if "edge_prior" in data else np.zeros((h, w), dtype=np.float32)
+                if edge.shape[:2] != (h, w):
+                    edge = cv2.resize(edge, (w, h), interpolation=cv2.INTER_LINEAR)
+                chans.append(edge[..., None])
         elif self.require_deep_features:
             raise FileNotFoundError(f"Missing RAFT/YOLO feature cache: {feature_path}")
         else:
             if self.use_raft:
                 chans.append(np.zeros((h, w, 4), dtype=np.float32))
             if self.use_yolo:
+                chans.append(np.zeros((h, w, 1), dtype=np.float32))
+            if self.use_dino:
+                chans.append(np.zeros((h, w, 2), dtype=np.float32))
+            if self.use_edge:
                 chans.append(np.zeros((h, w, 1), dtype=np.float32))
 
         if self.use_geometry:

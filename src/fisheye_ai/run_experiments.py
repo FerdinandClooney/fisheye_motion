@@ -26,6 +26,8 @@ def make_input(
     cfg: dict,
     zero_raft: bool = False,
     zero_yolo: bool = False,
+    zero_dino: bool = False,
+    zero_edge: bool = False,
     zero_geom: bool = False,
 ) -> tuple[torch.Tensor, dict[str, np.ndarray]]:
     size = image_size(cfg)
@@ -35,15 +37,25 @@ def make_input(
     feat = np.load(Path(cfg["feature_cache"]) / f"{sample.sid}.npz")
     flow = feat["flow"].astype(np.float32)
     yolo = feat["yolo_objectness"].astype(np.float32)
+    dino = feat["dino_prior"].astype(np.float32) if "dino_prior" in feat else np.zeros((size[0], size[1], 2), dtype=np.float32)
+    edge = feat["edge_prior"].astype(np.float32) if "edge_prior" in feat else np.zeros(size, dtype=np.float32)
     if flow.shape[:2] != size:
         flow = cv2.resize(flow, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
     if yolo.shape[:2] != size:
         yolo = cv2.resize(yolo, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
+    if dino.shape[:2] != size:
+        dino = cv2.resize(dino, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
+    if edge.shape[:2] != size:
+        edge = cv2.resize(edge, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
     geom = geometry_maps(load_calibration(sample.calib), size)
     if zero_raft:
         flow = np.zeros_like(flow)
     if zero_yolo:
         yolo = np.zeros_like(yolo)
+    if zero_dino:
+        dino = np.zeros_like(dino)
+    if zero_edge:
+        edge = np.zeros_like(edge)
     if zero_geom:
         geom = np.zeros_like(geom)
     x = np.concatenate(
@@ -53,17 +65,49 @@ def make_input(
             diff,
             flow,
             yolo[..., None],
+            dino,
+            edge[..., None],
             geom,
         ],
         axis=2,
     ).transpose(2, 0, 1)
-    return torch.from_numpy(x[None]).float(), {"prev": prev, "curr": curr, "flow": flow, "yolo": yolo, "geom": geom}
+    return torch.from_numpy(x[None]).float(), {"prev": prev, "curr": curr, "flow": flow, "yolo": yolo, "dino": dino, "edge": edge, "geom": geom}
 
 
 @torch.inference_mode()
 def predict_net(model: torch.nn.Module, x: torch.Tensor) -> np.ndarray:
     prob = torch.sigmoid(model(x.cuda(non_blocking=True)))[0, 0].detach().cpu().numpy()
     return prob.astype(np.float32)
+
+
+@torch.inference_mode()
+def predict_tta(model: torch.nn.Module, x: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+    x_gpu = x.cuda(non_blocking=True)
+    probs = [torch.sigmoid(model(x_gpu))]
+    x_flip = torch.flip(x_gpu, dims=[3])
+    probs.append(torch.flip(torch.sigmoid(model(x_flip)), dims=[3]))
+    stack = torch.stack(probs, dim=0)
+    mean = stack.mean(dim=0)[0, 0].detach().cpu().numpy().astype(np.float32)
+    uncertainty = stack.std(dim=0)[0, 0].detach().cpu().numpy().astype(np.float32)
+    return mean, uncertainty
+
+
+def uncertainty_fusion(prob: np.ndarray, uncertainty: np.ndarray, comp: dict[str, np.ndarray], cfg: dict) -> np.ndarray:
+    flow_motion = comp["flow"][..., 2]
+    yolo = comp["yolo"]
+    dino = comp["dino"]
+    edge = comp["edge"]
+    semantic = 0.55 * dino[..., 0] + 0.45 * dino[..., 1]
+    weights = cfg.get("fusion", {})
+    fused = (
+        float(weights.get("net", 0.58)) * prob
+        + float(weights.get("raft", 0.14)) * flow_motion
+        + float(weights.get("yolo", 0.12)) * yolo
+        + float(weights.get("dino", 0.11)) * semantic
+        + float(weights.get("edge", 0.05)) * edge
+    )
+    fused = fused * (1.0 - float(weights.get("uncertainty_penalty", 0.25)) * np.clip(uncertainty * 2.0, 0.0, 1.0))
+    return np.clip(fused, 0.0, 1.0).astype(np.float32)
 
 
 def add_metric(rows: list[dict], method: str, sid: str, pred: np.ndarray, gt: np.ndarray, r_map: np.ndarray) -> None:
@@ -120,20 +164,28 @@ def main() -> None:
         for name, pred in variants.items():
             add_metric(rows, name, sample.sid, pred, gt, r_map)
         prob_full = predict_net(model, x)
+        prob_tta, uncertainty = predict_tta(model, x)
         prob_no_raft = predict_net(model, make_input(sample, cfg, zero_raft=True)[0])
         prob_no_yolo = predict_net(model, make_input(sample, cfg, zero_yolo=True)[0])
+        prob_no_dino = predict_net(model, make_input(sample, cfg, zero_dino=True)[0])
+        prob_no_edge = predict_net(model, make_input(sample, cfg, zero_edge=True)[0])
         prob_no_geom = predict_net(model, make_input(sample, cfg, zero_geom=True)[0])
+        fused_prob = uncertainty_fusion(prob_tta, uncertainty, comp, cfg)
         net_masks = {
             "FisheyeMotionNet-no-RAFT": prob_no_raft >= float(cfg["threshold"]),
             "FisheyeMotionNet-no-YOLO": prob_no_yolo >= float(cfg["threshold"]),
+            "FisheyeMotionNet-no-DINO": prob_no_dino >= float(cfg["threshold"]),
+            "FisheyeMotionNet-no-edge": prob_no_edge >= float(cfg["threshold"]),
             "FisheyeMotionNet-no-geometry": prob_no_geom >= float(cfg["threshold"]),
             "FisheyeMotionNet": prob_full >= float(cfg["threshold"]),
+            "FisheyeMotionNet-DINO-edge-TTA": prob_tta >= float(cfg["threshold"]),
+            "UncertaintyFusion": fused_prob >= float(cfg["threshold"]),
         }
         if sam is not None:
-            full = sam.refine(curr, prob_full, boxes, threshold=float(cfg["threshold"]))
+            full = sam.refine(curr, fused_prob, boxes, threshold=float(cfg["threshold"]))
         else:
-            full = (prob_full >= float(cfg["threshold"])).astype(np.uint8)
-        net_masks["Full-RAFT-YOLO-FMN-SAM2"] = full
+            full = (fused_prob >= float(cfg["threshold"])).astype(np.uint8)
+        net_masks["Full-RAFT-YOLO-DINO-FMN-SAM2"] = full
         for name, pred in net_masks.items():
             add_metric(rows, name, sample.sid, pred.astype(np.uint8), gt, r_map)
         cv2.imwrite(str(pred_dir / f"{sample.sid}_full.png"), (full * 255).astype(np.uint8))
@@ -151,7 +203,10 @@ def main() -> None:
                     ("rectified", rectified),
                     ("RAFT flow", flow_to_rgb(comp["flow"])),
                     ("YOLO objectness", comp["yolo"]),
+                    ("DINO semantic", comp["dino"][..., 0]),
+                    ("uncertainty", uncertainty),
                     ("FMN prob", prob_full),
+                    ("fused prob", fused_prob),
                     ("full mask", overlay_mask(curr, full)),
                     ("ground truth", gt),
                     ("error TP/FP/FN", error_map(full, gt)),

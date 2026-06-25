@@ -33,13 +33,18 @@ class BoundaryLoss(nn.Module):
 
 
 class MotionLoss(nn.Module):
-    def __init__(self, bce: float = 1.0, dice: float = 1.0, boundary: float = 0.15) -> None:
+    def __init__(self, bce: float = 1.0, dice: float = 1.0, boundary: float = 0.25, edge_weight: float = 2.0) -> None:
         super().__init__()
-        self.bce = nn.BCEWithLogitsLoss()
+        self.edge_weight = edge_weight
         self.dice = DiceLoss()
         self.boundary = BoundaryLoss()
         self.weights = (bce, dice, boundary)
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         wb, wd, wbd = self.weights
-        return wb * self.bce(logits, target) + wd * self.dice(logits, target) + wbd * self.boundary(logits, target)
+        dilated = F.max_pool2d(target, 5, stride=1, padding=2)
+        eroded = 1.0 - F.max_pool2d(1.0 - target, 5, stride=1, padding=2)
+        edge = (dilated - eroded).clamp(0, 1)
+        weights = 1.0 + self.edge_weight * edge
+        bce = F.binary_cross_entropy_with_logits(logits, target, weight=weights)
+        return wb * bce + wd * self.dice(logits, target) + wbd * self.boundary(logits, target)

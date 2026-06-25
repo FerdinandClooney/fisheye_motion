@@ -29,6 +29,18 @@ yolo:
   imgsz: 640
   conf: 0.20
 
+dino:
+  enabled: true
+  model: dinov2_vits14_reg
+
+fusion:
+  net: 0.82
+  raft: 0.03
+  yolo: 0.05
+  dino: 0.07
+  edge: 0.03
+  uncertainty_penalty: 0.08
+
 sam2:
   enabled: true
   repo_dir: third_party/sam2
