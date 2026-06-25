@@ -1,0 +1,26 @@
+# Local environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+condaenv.*.requirements.txt
+
+# Datasets and generated artifacts
+data/
+homework2.zip
+outputs/
+checkpoints/
+
+# Downloaded model weights and third-party clones
+*.pt
+*.pth
+*.onnx
+third_party/
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store

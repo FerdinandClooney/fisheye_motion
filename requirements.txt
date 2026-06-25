@@ -1,0 +1,16 @@
+opencv-python-headless
+albumentations
+ultralytics
+scikit-image
+matplotlib
+pandas
+tqdm
+scipy
+pillow
+pyyaml
+imageio
+tifffile
+lazy-loader
+hydra-core==1.3.2
+iopath
+portalocker

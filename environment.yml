@@ -1,0 +1,7 @@
+name: fisheye_motion
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - git
