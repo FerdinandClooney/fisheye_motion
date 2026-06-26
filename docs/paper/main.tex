@@ -1,0 +1,181 @@
+\documentclass[10pt,twocolumn]{ctexart}
+
+\usepackage[margin=0.72in,columnsep=0.24in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{microtype}
+
+\definecolor{cvblue}{HTML}{2563EB}
+\definecolor{cvgreen}{HTML}{16A34A}
+\definecolor{cvred}{HTML}{DC2626}
+\definecolor{cvslate}{HTML}{0F172A}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=cvblue,
+  citecolor=cvblue,
+  urlcolor=cvblue
+}
+\captionsetup{font=small,labelfont=bf}
+\setlist[itemize]{leftmargin=1.2em,itemsep=0.1em,topsep=0.2em}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.55em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+
+\title{\vspace{-1.0em}\bfseries FisheyeMotion: 融合深度光流、语义先验与可提示分割的鱼眼视频运动区域抽象}
+\author{
+  Zhuang Jiahan\\
+  Tongji University\\
+  \texttt{https://github.com/FerdinandClooney/fisheye\_motion}
+}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.1em}
+
+\begin{abstract}
+鱼眼视频具备大视场优势，但强径向畸变会改变目标尺度、边界形态与表观运动，使传统帧差或单一光流阈值在边缘区域产生大量误检。本文提出 \textbf{FisheyeMotion}，一个面向鱼眼相邻帧运动区域抽象与短时目标跟踪的 GPU 深度学习系统。系统融合 RAFT 深度光流、YOLO26-seg 实例先验、DINOv2 语义变化先验、鱼眼几何图、边界先验、自训练 FisheyeMotionNet、测试时增强不确定性融合与 SAM2.1 掩膜细化。最终模型 \texttt{Full-RAFT-YOLO-DINO-FMN-SAM2} 在 19 个测试样本上取得 IoU 0.3131、Precision 0.3613、Recall 0.5830、F1 0.3932；相比 YOLO-only 的 F1 0.3292 提升 0.0640，相比 FrameDiff 的 F1 0.0658 提升 0.3274。区域评估显示中心、中间、边缘 F1 分别为 0.4012、0.3471、0.2915，表明深度运动、语义、几何与边界提示对鱼眼畸变场景具有互补价值。
+\end{abstract}
+
+\section{引言}
+运动区域抽象是视频理解、移动机器人感知和智能交通监控中的基础问题。鱼眼镜头的大视场使其适合城市道路和车载场景，但投影畸变也带来三个困难：第一，目标形状随半径非线性拉伸；第二，相同真实运动在图像平面中可能呈现不同光流幅值；第三，边缘区域的标注、实例边界与跟踪框更不稳定。
+
+因此，本项目不把任务简化成帧差阈值或光流阈值，而是将多种模型证据联合学习。RAFT 提供稠密运动，YOLO26-seg 提供实例先验，DINOv2 提供语义变化，鱼眼标定生成径向几何图，SAM2.1 用于 promptable mask refinement。图~\ref{fig:architecture} 展示了完整链路。
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{../figures/architecture_graph.png}
+  \caption{\textbf{FisheyeMotion 总体架构。} 系统不是用单一阈值判断运动，而是将 RAFT 光流、YOLO 实例先验、DINOv2 语义变化、边界先验和鱼眼几何图共同输入 FisheyeMotionNet，再通过不确定性融合与 SAM2.1 prompt refinement 得到最终运动掩膜和短时轨迹。}
+  \label{fig:architecture}
+\end{figure*}
+
+\section{相关工作}
+\textbf{光流估计。} RAFT~\cite{teed2020raft} 通过 all-pairs correlation volume 与循环更新显著提高光流质量，后续 SEA-RAFT~\cite{wang2024searaft} 进一步提升效率。本文使用 RAFT large 作为深度运动底座，但不直接阈值化光流，而是将其作为网络输入与跟踪传播线索。
+
+\textbf{视频分割与提示分割。} Cutie~\cite{cheng2024cutie} 代表的视频目标分割方法强调对象记忆和跨帧传播；SAM2~\cite{ravi2024sam2} 则将 promptable segmentation 扩展到图像和视频。本文数据主要是相邻帧 pair，因此使用短时传播替代长时记忆，并让 SAM2.1 专注于边界细化，而非独立判断运动属性。
+
+\textbf{语义先验。} DINOv2~\cite{oquab2023dinov2} 的自监督 patch token 具有良好的语义聚类能力。受 ``Segment Any Motion in Videos''~\cite{li2025segmentanymotion} 中运动线索、DINO 表征与 SAM 掩膜 densification 结合思想启发，本文将 DINOv2 semantic saliency/change 作为小样本运动分割的重要补充。
+
+\section{方法}
+\subsection{鱼眼几何建模}
+给定标定 JSON 中的主点与径向参数，本文为每个像素生成归一化半径与极角编码：
+\begin{equation}
+  r = \frac{\sqrt{(x-c_x)^2 + (y-c_y)^2}}{r_{\max}}, \quad
+  g(x,y) = [r, \sin\theta, \cos\theta].
+\end{equation}
+评估时按 $r<0.35$、$0.35\le r<0.70$、$r\ge0.70$ 划分中心、中间与边缘区域，以验证模型对畸变强度变化的鲁棒性。
+
+\subsection{深度证据提取}
+RAFT 输出 $u,v,|f|,\angle f$ 四通道光流；YOLO26-seg 输出 objectness mask 与 boxes；DINOv2 输出当前帧 semantic saliency 与前后帧 semantic change；边界先验由 Canny 边缘和帧差 Sobel 梯度组合得到。图~\ref{fig:evidence} 展示了同一样本上的真实缓存证据。
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{../figures/feature_evidence_panel.jpg}
+  \caption{\textbf{真实模型证据面板。} 与调试式拼图不同，该图展示了最终模型实际使用的关键证据：当前帧、RAFT 光流、YOLO objectness、DINOv2 semantic change、边界先验、最终预测、GT 与误差图。红色为 FP，蓝色为 FN，绿色为 TP。}
+  \label{fig:evidence}
+\end{figure*}
+
+\subsection{FisheyeMotionNet}
+FisheyeMotionNet 是一个 Attention U-Net 风格的监督运动分割网络，输入共 18 通道：
+\begin{equation}
+\begin{split}
+X = [&I_{t-1}^{rgb}, I_t^{rgb}, |I_t-I_{t-1}|, f_{RAFT},\\
+&M_{YOLO}, P_{DINO}^{sal}, P_{DINO}^{chg}, P_{edge}, g(x,y)].
+\end{split}
+\end{equation}
+训练损失为边界加权 BCE、Dice loss 与 boundary loss 的组合：
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_{BCE}^{w} + \lambda_d \mathcal{L}_{Dice} + \lambda_b \mathcal{L}_{Boundary}.
+\end{equation}
+其中边界权重由 GT 膨胀边缘生成，用于缓解运动目标细边界在背景中被淹没的问题。
+
+\subsection{不确定性融合与 SAM2 细化}
+推理时使用原图与水平翻转两路 TTA，均值作为概率图，标准差作为 epistemic uncertainty。融合分数为：
+\begin{equation}
+S = w_n P_{net} + w_f P_{flow}+w_y P_{yolo}+w_d P_{dino}+w_e P_{edge}-w_u U.
+\end{equation}
+高置信点、运动框和 YOLO 框共同作为 SAM2.1 prompts。这样 SAM2 负责边界 densification，运动属性仍由 FisheyeMotionNet 与深度证据决定。
+
+\section{实验设置}
+数据集来自 \texttt{homework2.zip}，包含当前帧、前一帧、GT 掩膜和鱼眼标定文件。固定随机种子 42，训练/验证/测试比例为 70/15/15，测试集共 19 个样本。所有训练和推理强制使用 GPU；若 \texttt{torch.cuda.is\_available()} 为 false，程序直接停止。实验硬件为 RTX 4060 Laptop 8GB，默认分辨率 640$\times$480，batch size 为 2。
+
+\section{结果}
+\begin{table}[t]
+\centering
+\caption{测试集主结果。Full 模型在综合 F1、中心/中间/边缘区域均表现最稳定。}
+\label{tab:main}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lcccc}
+\toprule
+Method & IoU & Prec. & Rec. & F1\\
+\midrule
+FrameDiff & 0.0376 & 0.0534 & 0.4058 & 0.0658\\
+Farneback & 0.0147 & 0.0298 & 0.1072 & 0.0275\\
+RAFT-only & 0.0264 & 0.0512 & 0.1151 & 0.0462\\
+YOLO-only & 0.2384 & 0.2588 & 0.5933 & 0.3292\\
+FisheyeMotionNet & 0.2771 & 0.3964 & 0.4043 & 0.3590\\
+\textbf{Full} & \textbf{0.3131} & \textbf{0.3613} & 0.5830 & \textbf{0.3932}\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+表~\ref{tab:main} 表明，传统方法在鱼眼视频中明显不足。FrameDiff 召回较高但 precision 很低，说明其容易把光照变化、静态边缘和镜头遮挡误判为运动。YOLO-only 具备较强实例召回，但不能区分静止目标和运动目标。Full 模型在 precision 与 recall 之间取得更好平衡。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{../figures/method_ranking.png}
+  \caption{\textbf{有意义的 baseline 排名。} 仅保留确实可比较的方法，避免用没有信息量的单柱状图堆砌篇幅。}
+  \label{fig:ranking}
+\end{figure}
+
+\subsection{区域与消融}
+图~\ref{fig:ablation} 给出全图、中心、中间和边缘区域的 F1 矩阵。Full 模型边缘 F1 为 0.2915，显著高于 FisheyeMotionNet 单体的 0.1445；去掉 RAFT 后边缘 F1 降至 0.1677，去掉几何图后降至 0.1869，说明边缘区域最依赖深度光流与显式几何建模。去掉 DINOv2 后整体 F1 下降到 0.2804，说明语义变化先验在小样本训练中确实提供了补充监督。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{../figures/ablation_region_matrix.png}
+  \caption{\textbf{区域感知消融矩阵。} 行为不同方法或去模块版本，列为全图/中心/中间/边缘 F1。该图直接呈现哪些模块改善了鱼眼畸变最强的边缘区域。}
+  \label{fig:ablation}
+\end{figure}
+
+\subsection{定性结果}
+图~\ref{fig:qualitative} 给出最佳、中位和困难边缘样本。结果显示模型能够捕获车辆、行人与边缘小目标，但仍会在车体反光、镜头遮挡和远处细小行人处产生 FP/FN。
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{../figures/qualitative_comparison.jpg}
+  \caption{\textbf{真实样例定性比较。} 每行是一个测试样本，依次展示当前帧、GT、Full 模型预测和像素级误差。该图比单纯指标图更能说明模型在大目标、小目标和边缘畸变区域的行为。}
+  \label{fig:qualitative}
+\end{figure*}
+
+\subsection{跟踪与失败模式}
+短时跟踪由最终掩膜连通域、YOLO/SAM2 观测框和 RAFT 传播中心共同决定。图~\ref{fig:failure} 展示了一个典型困难样本：模型能稳定框出若干运动目标，但大面积车体/镜头底部区域仍可能被误分割；远处小行人和边缘区域则容易漏检。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{../figures/tracking_failure_panel.jpg}
+  \caption{\textbf{短时跟踪与失败分析。} 黄色框来自最终连通区域，误差图显示大面积 FP 与小目标 FN。该图明确指出后续提升方向：长时 VOS memory、畸变感知 transformer head 与更强的 negative sampling。}
+  \label{fig:failure}
+\end{figure}
+
+\section{讨论}
+本项目的核心结论是：鱼眼运动分割不是“运动强度足够大就属于前景”的问题。RAFT-only 和 Farneback-only 失败说明光流幅值缺少语义和实例约束；YOLO-only 的高召回低精度说明实例检测缺少运动属性；SAM2-FrameDiff 的弱表现说明 promptable segmentation 依赖 prompt 质量。最终 Full 模型把运动、实例、语义、边界和几何统一到一个监督网络与 prompt refinement 链路中，因此取得最高综合 F1。
+
+\section{局限与未来工作}
+当前数据主要是相邻帧 pair，因此跟踪评估只能覆盖短时关联，不能严格评估 IDF1、HOTA 或长时遮挡恢复。其次，Full 模型仍对 YOLO 先验依赖较强，no-YOLO 消融表现很弱。后续可引入长视频记忆网络、基于 DINO/SAM 的伪标签扩增、畸变感知 transformer decoder，以及更系统的校正域/鱼眼域双路线训练。
+
+\section{结论}
+本文完成了一个 GPU 深度模型主导的鱼眼视频运动区域抽象系统。通过 RAFT、YOLO、DINOv2、几何图、边界先验、FisheyeMotionNet、TTA uncertainty 与 SAM2.1 的协同，最终模型显著优于传统帧差、Farneback、RAFT-only 和 YOLO-only baseline。更重要的是，区域消融和真实样例图表明，模型提升主要来自对鱼眼边缘畸变区域的更强建模，而不是简单指标包装。
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

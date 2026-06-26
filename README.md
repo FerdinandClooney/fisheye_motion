@@ -10,9 +10,9 @@ The main system uses RAFT optical flow, Ultralytics YOLO segmentation priors, DI
 - Reproducible scripts under `scripts/`.
 - Default experiment config at `configs/default.yaml`.
 - Final Chinese report at `PRJ4_report_fisheye_motion_ai.md`.
-- Polished academic report at `docs/academic_report.md`.
-- Styled HTML report at `docs/academic_report.html`.
-- Publication-style report figures under `docs/figures/`.
+- Polished CVPR/ICCV-style LaTeX report at `docs/paper/main.tex`.
+- GitHub preview report index at `docs/academic_report.md`.
+- Publication-style architecture, qualitative, ablation, and failure-analysis figures under `docs/figures/`.
 - Packaging files: `pyproject.toml`, `requirements.txt`, and `environment.yml`.
 
 Large files are intentionally not committed:
@@ -162,7 +162,7 @@ Middle F1 0.3413
 Edge F1   0.2897
 ```
 
-See `PRJ4_report_fisheye_motion_ai.md` for the full experimental discussion, ablations, failure cases, and region-wise analysis. For a more polished paper-style presentation with refined figures, open `docs/academic_report.md` or `docs/academic_report.html`.
+See `PRJ4_report_fisheye_motion_ai.md` for the full experimental discussion, ablations, failure cases, and region-wise analysis. For a polished paper-style presentation with refined figures, open `docs/paper/main.tex`; for GitHub preview, open `docs/academic_report.md`.
 
 The newer research-oriented branch adds DINOv2 semantic priors, an edge prior, TTA uncertainty, and an uncertainty-weighted fusion stage. Its final method name in `metrics_summary.csv` is:
 
