@@ -22,6 +22,20 @@ xelatex main.tex
 
 The source uses `ctexart`, so `xelatex` is recommended.
 
+On the original Ubuntu workstation, XeLaTeX was installed without sudo under:
+
+```bash
+/home/ferdinand/texlive/2026
+```
+
+Use it in the current shell with:
+
+```bash
+export PATH=/home/ferdinand/texlive/2026/bin/x86_64-linux:$PATH
+```
+
+The resulting compiled PDF is `main.pdf`.
+
 If the figures need to be regenerated from experiment outputs:
 
 ```bash

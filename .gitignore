@@ -22,5 +22,14 @@ third_party/
 
 # Logs and temporary files
 *.log
+*.aux
+*.bbl
+*.blg
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
 *.tmp
 .DS_Store
