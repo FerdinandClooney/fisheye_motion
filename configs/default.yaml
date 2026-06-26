@@ -47,6 +47,9 @@ sam2:
   checkpoint: third_party/sam2/checkpoints/sam2.1_hiera_base_plus.pt
   config: configs/sam2.1/sam2.1_hiera_b+.yaml
 
+rectified:
+  fov_deg: 120.0
+
 splits:
   train: 0.70
   val: 0.15

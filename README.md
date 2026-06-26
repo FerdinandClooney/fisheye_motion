@@ -4,6 +4,11 @@ GPU deep-learning pipeline for PRJ4: moving-area abstraction and target tracking
 
 The main system uses RAFT optical flow, Ultralytics YOLO segmentation priors, DINOv2 semantic motion priors, boundary-aware cues, a supervised two-stream `FisheyeMotionNet`, uncertainty-aware test-time augmentation, SAM2.1 mask refinement, fisheye geometry maps, region-wise evaluation, and short-range target tracking. Traditional FrameDiff and Farneback methods are kept only as baselines.
 
+The repository now supports both required processing routes for the homework:
+
+- `fisheye`: process directly in the original fisheye image domain.
+- `rectified`: rectify first, process in the corrected domain, then project predictions back to the fisheye domain for fair GT evaluation.
+
 ## What Is Included
 
 - Full source code under `src/fisheye_ai/`.
@@ -112,15 +117,16 @@ The smoke test validates the data, caches RAFT/YOLO features for a small subset,
 bash scripts/run_full_pipeline.sh
 ```
 
-This runs the complete experiment sequence:
+This runs the complete experiment sequence for both routes:
 
 1. Dataset validation.
-2. RAFT and YOLO feature extraction.
-3. DINOv2 semantic saliency/change prior extraction and boundary prior extraction.
-4. `FisheyeMotionNet` training with boundary-weighted supervision.
-5. Baseline evaluation: FrameDiff, Farneback, RAFT-only, YOLO-only, and SAM2 prompted by FrameDiff.
-6. Main and ablation evaluation: FisheyeMotionNet variants and full RAFT+YOLO+DINO+FisheyeMotionNet+SAM2 model.
-7. Short-range tracking, overlays, region metrics, and report figures.
+2. Fisheye-domain RAFT and YOLO feature extraction.
+3. Fisheye-domain training and evaluation.
+4. Rectified-domain RAFT and YOLO feature extraction.
+5. Rectified-domain training and evaluation with back-projection to fisheye GT.
+6. Baseline, ablation, and region-wise evaluation for both routes.
+7. Automatic route comparison figure and CSV export.
+8. Short-range tracking, overlays, and report figures.
 
 Key generated files:
 
@@ -129,10 +135,16 @@ checkpoints/best_f1.pth
 outputs/deep_features/*.npz
 outputs/metrics.csv
 outputs/metrics_summary.csv
+outputs/route_comparison.csv
+outputs/figures/route_comparison.png
 outputs/visualizations/*_summary.png
 outputs/predictions/*_full.png
 outputs/figures/training_curve.png
 outputs/figures/method_f1_bar.png
+checkpoints_rectified/best_f1.pth
+outputs_rectified/deep_features/*.npz
+outputs_rectified/metrics.csv
+outputs_rectified/metrics_summary.csv
 PRJ4_report_fisheye_motion_ai.md
 ```
 
@@ -197,6 +209,22 @@ Edit `configs/default.yaml` for common changes:
 - `sam2.repo_dir` and `sam2.checkpoint`: SAM2 code and checkpoint locations.
 
 Relative paths are resolved from the repository root. Absolute paths are also supported.
+
+## Dual-Route Commands
+
+Run the two routes manually if you want fine-grained control:
+
+```bash
+python -m fisheye_ai.build_feature_cache --config configs/default.yaml --domain fisheye --split all
+python -m fisheye_ai.train --config configs/default.yaml --domain fisheye
+python -m fisheye_ai.run_experiments --config configs/default.yaml --domain fisheye --checkpoint checkpoints/best_f1.pth
+
+python -m fisheye_ai.build_feature_cache --config configs/default.yaml --domain rectified --split all
+python -m fisheye_ai.train --config configs/default.yaml --domain rectified
+python -m fisheye_ai.run_experiments --config configs/default.yaml --domain rectified --checkpoint checkpoints_rectified/best_f1.pth
+
+python -m fisheye_ai.compare_routes --config configs/default.yaml
+```
 
 ## Troubleshooting
 

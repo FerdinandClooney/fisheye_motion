@@ -10,10 +10,10 @@ import torch
 from tqdm import tqdm
 
 from .baselines import farneback, frame_diff, raft_only, yolo_only
-from .config import ensure_dirs, image_size, load_config
+from .config import apply_processing_domain, ensure_dirs, image_size, load_config
 from .dataset import Sample, discover_samples, load_calibration, split_samples
 from .deep_modules import Sam2Refiner, load_boxes
-from .geometry import geometry_maps, rectify_image
+from .geometry import geometry_maps, position_maps, project_rectified_mask_to_fisheye, rectify_image
 from .metrics import region_stats
 from .model import FisheyeMotionNet
 from .tracking import boxes_from_mask, draw_boxes, propagate_boxes
@@ -24,6 +24,7 @@ from .visualize import error_map, flow_to_rgb, overlay_mask, save_grid
 def make_input(
     sample: Sample,
     cfg: dict,
+    domain: str,
     zero_raft: bool = False,
     zero_yolo: bool = False,
     zero_dino: bool = False,
@@ -31,8 +32,12 @@ def make_input(
     zero_geom: bool = False,
 ) -> tuple[torch.Tensor, dict[str, np.ndarray]]:
     size = image_size(cfg)
+    calib = load_calibration(sample.calib)
     prev = resize_img(read_rgb(sample.previous), size, cv2.INTER_AREA)
     curr = resize_img(read_rgb(sample.current), size, cv2.INTER_AREA)
+    if domain == "rectified":
+        prev = rectify_image(prev, calib, size, interpolation=cv2.INTER_LINEAR)
+        curr = rectify_image(curr, calib, size, interpolation=cv2.INTER_LINEAR)
     diff = np.mean(np.abs(curr.astype(np.float32) / 255.0 - prev.astype(np.float32) / 255.0), axis=2, keepdims=True)
     feat = np.load(Path(cfg["feature_cache"]) / f"{sample.sid}.npz")
     flow = feat["flow"].astype(np.float32)
@@ -47,7 +52,7 @@ def make_input(
         dino = cv2.resize(dino, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
     if edge.shape[:2] != size:
         edge = cv2.resize(edge, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
-    geom = geometry_maps(load_calibration(sample.calib), size)
+    geom = geometry_maps(calib, size) if domain == "fisheye" else position_maps(size)
     if zero_raft:
         flow = np.zeros_like(flow)
     if zero_yolo:
@@ -110,20 +115,51 @@ def uncertainty_fusion(prob: np.ndarray, uncertainty: np.ndarray, comp: dict[str
     return np.clip(fused, 0.0, 1.0).astype(np.float32)
 
 
-def add_metric(rows: list[dict], method: str, sid: str, pred: np.ndarray, gt: np.ndarray, r_map: np.ndarray) -> None:
-    row = {"id": sid, "method": method}
+def add_metric(rows: list[dict], route: str, method: str, sid: str, pred: np.ndarray, gt: np.ndarray, r_map: np.ndarray) -> None:
+    row = {"id": sid, "route": route, "method": method}
     row.update(region_stats(pred.astype(bool), gt.astype(bool), r_map))
     rows.append(row)
+
+
+def load_views(sample: Sample, cfg: dict, domain: str) -> dict[str, np.ndarray | dict]:
+    size = image_size(cfg)
+    calib = load_calibration(sample.calib)
+    fish_prev = resize_img(read_rgb(sample.previous), size, cv2.INTER_AREA)
+    fish_curr = resize_img(read_rgb(sample.current), size, cv2.INTER_AREA)
+    fish_gt = resize_img(read_mask(sample.gt), size, cv2.INTER_NEAREST).astype(np.uint8)
+    fish_r = geometry_maps(calib, size)[..., 0]
+    if domain == "rectified":
+        prev = rectify_image(fish_prev, calib, size, interpolation=cv2.INTER_LINEAR)
+        curr = rectify_image(fish_curr, calib, size, interpolation=cv2.INTER_LINEAR)
+        gt = rectify_image(fish_gt, calib, size, interpolation=cv2.INTER_NEAREST).astype(np.uint8)
+    else:
+        prev = fish_prev
+        curr = fish_curr
+        gt = fish_gt
+    return {"prev": prev, "curr": curr, "gt": gt, "fish_prev": fish_prev, "fish_curr": fish_curr, "fish_gt": fish_gt, "fish_r": fish_r, "calib": calib}
+
+
+def to_eval_mask(mask: np.ndarray, views: dict[str, np.ndarray | dict], cfg: dict, domain: str) -> np.ndarray:
+    fish_size = views["fish_gt"].shape[:2]
+    if domain == "rectified":
+        return project_rectified_mask_to_fisheye(
+            mask.astype(np.uint8),
+            views["calib"],
+            fish_size,
+            fov_deg=float(cfg.get("rectified", {}).get("fov_deg", 120.0)),
+        )
+    return mask.astype(np.uint8)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--domain", default="fisheye", choices=["fisheye", "rectified"])
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--no-sam", action="store_true")
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    cfg = apply_processing_domain(load_config(args.config), args.domain)
     ensure_dirs(cfg)
     require_cuda()
     set_seed(int(cfg["seed"]))
@@ -143,11 +179,12 @@ def main() -> None:
     pred_dir = Path(cfg["output_root"]) / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
     for i, sample in enumerate(tqdm(test, desc="experiments")):
-        x, comp = make_input(sample, cfg)
+        views = load_views(sample, cfg, args.domain)
+        x, comp = make_input(sample, cfg, args.domain)
         curr = comp["curr"]
         prev = comp["prev"]
-        gt = resize_img(read_mask(sample.gt), size, cv2.INTER_NEAREST).astype(np.uint8)
-        r_map = comp["geom"][..., 0]
+        gt = views["fish_gt"]
+        r_map = views["fish_r"]
         fd = frame_diff(prev, curr)
         fb, _ = farneback(prev, curr)
         raft = raft_only(comp["flow"])
@@ -162,14 +199,14 @@ def main() -> None:
             "SAM2-FrameDiff": sam_fd,
         }
         for name, pred in variants.items():
-            add_metric(rows, name, sample.sid, pred, gt, r_map)
+            add_metric(rows, args.domain, name, sample.sid, to_eval_mask(pred, views, cfg, args.domain), gt, r_map)
         prob_full = predict_net(model, x)
         prob_tta, uncertainty = predict_tta(model, x)
-        prob_no_raft = predict_net(model, make_input(sample, cfg, zero_raft=True)[0])
-        prob_no_yolo = predict_net(model, make_input(sample, cfg, zero_yolo=True)[0])
-        prob_no_dino = predict_net(model, make_input(sample, cfg, zero_dino=True)[0])
-        prob_no_edge = predict_net(model, make_input(sample, cfg, zero_edge=True)[0])
-        prob_no_geom = predict_net(model, make_input(sample, cfg, zero_geom=True)[0])
+        prob_no_raft = predict_net(model, make_input(sample, cfg, args.domain, zero_raft=True)[0])
+        prob_no_yolo = predict_net(model, make_input(sample, cfg, args.domain, zero_yolo=True)[0])
+        prob_no_dino = predict_net(model, make_input(sample, cfg, args.domain, zero_dino=True)[0])
+        prob_no_edge = predict_net(model, make_input(sample, cfg, args.domain, zero_edge=True)[0])
+        prob_no_geom = predict_net(model, make_input(sample, cfg, args.domain, zero_geom=True)[0])
         fused_prob = uncertainty_fusion(prob_tta, uncertainty, comp, cfg)
         net_masks = {
             "FisheyeMotionNet-no-RAFT": prob_no_raft >= float(cfg["threshold"]),
@@ -187,19 +224,21 @@ def main() -> None:
             full = (fused_prob >= float(cfg["threshold"])).astype(np.uint8)
         net_masks["Full-RAFT-YOLO-DINO-FMN-SAM2"] = full
         for name, pred in net_masks.items():
-            add_metric(rows, name, sample.sid, pred.astype(np.uint8), gt, r_map)
-        cv2.imwrite(str(pred_dir / f"{sample.sid}_full.png"), (full * 255).astype(np.uint8))
+            add_metric(rows, args.domain, name, sample.sid, to_eval_mask(pred.astype(np.uint8), views, cfg, args.domain), gt, r_map)
+        full_eval = to_eval_mask(full.astype(np.uint8), views, cfg, args.domain)
+        cv2.imwrite(str(pred_dir / f"{sample.sid}_full.png"), (full_eval * 255).astype(np.uint8))
         if i < 8:
             prev_boxes = boxes_from_mask(raft)
             prop_boxes = propagate_boxes(prev_boxes, comp["flow"])
-            boxed = draw_boxes(overlay_mask(curr, full), prop_boxes, (255, 255, 0))
-            calib = load_calibration(sample.calib)
-            rectified = rectify_image(curr, calib, size)
+            display_curr = views["fish_curr"] if args.domain == "rectified" else curr
+            display_mask = full_eval if args.domain == "rectified" else full
+            boxed = draw_boxes(overlay_mask(display_curr, display_mask), prop_boxes, (255, 255, 0))
+            rectified = rectify_image(views["fish_curr"], views["calib"], size)
             save_grid(
                 vis_dir / f"{sample.sid}_summary.png",
                 [
-                    ("previous", prev),
-                    ("current", curr),
+                    ("previous", views["fish_prev"] if args.domain == "rectified" else prev),
+                    ("current", display_curr),
                     ("rectified", rectified),
                     ("RAFT flow", flow_to_rgb(comp["flow"])),
                     ("YOLO objectness", comp["yolo"]),
@@ -207,17 +246,17 @@ def main() -> None:
                     ("uncertainty", uncertainty),
                     ("FMN prob", prob_full),
                     ("fused prob", fused_prob),
-                    ("full mask", overlay_mask(curr, full)),
+                    ("full mask", overlay_mask(display_curr, display_mask)),
                     ("ground truth", gt),
-                    ("error TP/FP/FN", error_map(full, gt)),
+                    ("error TP/FP/FN", error_map(display_mask, gt)),
                     ("tracking", boxed),
                 ],
             )
     df = pd.DataFrame(rows)
     out_csv = Path(cfg["output_root"]) / "metrics.csv"
     df.to_csv(out_csv, index=False)
-    summary = df.groupby("method").mean(numeric_only=True).sort_values("all_f1", ascending=False)
-    summary.to_csv(Path(cfg["output_root"]) / "metrics_summary.csv")
+    summary = df.groupby(["route", "method"]).mean(numeric_only=True).reset_index().sort_values("all_f1", ascending=False)
+    summary.to_csv(Path(cfg["output_root"]) / "metrics_summary.csv", index=False)
     print(summary[["all_iou", "all_precision", "all_recall", "all_f1", "center_f1", "middle_f1", "edge_f1"]])
     print(f"wrote {out_csv}")
 

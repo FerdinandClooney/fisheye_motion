@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -46,3 +47,17 @@ def ensure_dirs(cfg: dict[str, Any]) -> None:
 def image_size(cfg: dict[str, Any]) -> tuple[int, int]:
     h, w = cfg["image_size"]
     return int(h), int(w)
+
+
+def apply_processing_domain(cfg: dict[str, Any], domain: str) -> dict[str, Any]:
+    if domain not in {"fisheye", "rectified"}:
+        raise ValueError(f"Unsupported domain: {domain}")
+    out = copy.deepcopy(cfg)
+    out["processing_domain"] = domain
+    rectified_cfg = out.setdefault("rectified", {})
+    rectified_cfg.setdefault("fov_deg", 120.0)
+    if domain == "rectified":
+        for key in ("output_root", "checkpoint_dir", "feature_cache"):
+            path = Path(out[key])
+            out[key] = str((path.parent / f"{path.name}_rectified").resolve())
+    return out

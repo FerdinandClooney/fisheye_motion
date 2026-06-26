@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .config import ensure_dirs, image_size, load_config
+from .config import apply_processing_domain, ensure_dirs, image_size, load_config
 from .dataset import FisheyeMotionDataset, discover_samples, split_samples
 from .losses import MotionLoss
 from .metrics import binary_stats
@@ -35,11 +35,12 @@ def evaluate(model: torch.nn.Module, loader: DataLoader, threshold: float) -> di
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--domain", default="fisheye", choices=["fisheye", "rectified"])
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overfit", action="store_true")
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    cfg = apply_processing_domain(load_config(args.config), args.domain)
     ensure_dirs(cfg)
     require_cuda()
     set_seed(int(cfg["seed"]))
@@ -50,8 +51,22 @@ def main() -> None:
     if args.overfit:
         splits["val"] = splits["train"]
     size = image_size(cfg)
-    train_ds = FisheyeMotionDataset(splits["train"], size, cfg["feature_cache"], require_deep_features=True)
-    val_ds = FisheyeMotionDataset(splits["val"], size, cfg["feature_cache"], require_deep_features=True)
+    train_ds = FisheyeMotionDataset(
+        splits["train"],
+        size,
+        cfg["feature_cache"],
+        require_deep_features=True,
+        processing_domain=cfg["processing_domain"],
+        rectified_fov_deg=float(cfg.get("rectified", {}).get("fov_deg", 120.0)),
+    )
+    val_ds = FisheyeMotionDataset(
+        splits["val"],
+        size,
+        cfg["feature_cache"],
+        require_deep_features=True,
+        processing_domain=cfg["processing_domain"],
+        rectified_fov_deg=float(cfg.get("rectified", {}).get("fov_deg", 120.0)),
+    )
     train_loader = DataLoader(train_ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=int(cfg["num_workers"]), pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=int(cfg["num_workers"]), pin_memory=True)
     in_ch = int(train_ds[0]["image"].shape[0])

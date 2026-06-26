@@ -7,9 +7,10 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from .config import ensure_dirs, image_size, load_config
-from .dataset import discover_samples, split_samples
+from .config import apply_processing_domain, ensure_dirs, image_size, load_config
+from .dataset import discover_samples, load_calibration, split_samples
 from .deep_modules import DinoSemanticPrior, RaftFlow, YoloObjectness
+from .geometry import rectify_image
 from .utils import atomic_npz, normalize01, read_rgb, require_cuda, resize_img, set_seed
 
 
@@ -27,10 +28,11 @@ def boundary_prior(curr: np.ndarray, prev: np.ndarray) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--domain", default="fisheye", choices=["fisheye", "rectified"])
     parser.add_argument("--split", default="all", choices=["all", "train", "val", "test"])
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    cfg = apply_processing_domain(load_config(args.config), args.domain)
     ensure_dirs(cfg)
     require_cuda()
     set_seed(int(cfg["seed"]))
@@ -49,6 +51,10 @@ def main() -> None:
         existing = dict(np.load(out, allow_pickle=True)) if out.exists() else {}
         prev = resize_img(read_rgb(sample.previous), size, cv2.INTER_AREA)
         curr = resize_img(read_rgb(sample.current), size, cv2.INTER_AREA)
+        if args.domain == "rectified":
+            calib = load_calibration(sample.calib)
+            prev = rectify_image(prev, calib, size, interpolation=cv2.INTER_LINEAR)
+            curr = rectify_image(curr, calib, size, interpolation=cv2.INTER_LINEAR)
         flow = existing.get("flow")
         objectness = existing.get("yolo_objectness")
         boxes = existing.get("boxes")

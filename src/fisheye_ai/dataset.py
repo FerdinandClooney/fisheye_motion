@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .geometry import geometry_maps
+from .geometry import geometry_maps, position_maps, rectify_image
 from .utils import read_mask, read_rgb, resize_img
 
 
@@ -71,6 +71,8 @@ class FisheyeMotionDataset(Dataset):
         use_dino: bool = True,
         use_edge: bool = True,
         use_geometry: bool = True,
+        processing_domain: str = "fisheye",
+        rectified_fov_deg: float = 120.0,
     ) -> None:
         self.samples = samples
         self.image_size = image_size
@@ -81,6 +83,8 @@ class FisheyeMotionDataset(Dataset):
         self.use_dino = use_dino
         self.use_edge = use_edge
         self.use_geometry = use_geometry
+        self.processing_domain = processing_domain
+        self.rectified_fov_deg = float(rectified_fov_deg)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -91,9 +95,17 @@ class FisheyeMotionDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str]:
         sample = self.samples[idx]
         h, w = self.image_size
-        prev = resize_img(read_rgb(sample.previous), self.image_size).astype(np.float32) / 255.0
-        curr = resize_img(read_rgb(sample.current), self.image_size).astype(np.float32) / 255.0
-        gt = resize_img(read_mask(sample.gt), self.image_size, cv2.INTER_NEAREST).astype(np.float32)
+        calib = load_calibration(sample.calib)
+        prev_rgb = resize_img(read_rgb(sample.previous), self.image_size).astype(np.uint8)
+        curr_rgb = resize_img(read_rgb(sample.current), self.image_size).astype(np.uint8)
+        gt_mask = resize_img(read_mask(sample.gt), self.image_size, cv2.INTER_NEAREST).astype(np.uint8)
+        if self.processing_domain == "rectified":
+            prev_rgb = rectify_image(prev_rgb, calib, self.image_size, interpolation=cv2.INTER_LINEAR)
+            curr_rgb = rectify_image(curr_rgb, calib, self.image_size, interpolation=cv2.INTER_LINEAR)
+            gt_mask = rectify_image(gt_mask, calib, self.image_size, interpolation=cv2.INTER_NEAREST)
+        prev = prev_rgb.astype(np.float32) / 255.0
+        curr = curr_rgb.astype(np.float32) / 255.0
+        gt = gt_mask.astype(np.float32)
         diff = np.mean(np.abs(curr - prev), axis=2, keepdims=True)
 
         chans = [prev, curr, diff]
@@ -133,8 +145,7 @@ class FisheyeMotionDataset(Dataset):
                 chans.append(np.zeros((h, w, 1), dtype=np.float32))
 
         if self.use_geometry:
-            calib = load_calibration(sample.calib)
-            geom = geometry_maps(calib, self.image_size)
+            geom = geometry_maps(calib, self.image_size) if self.processing_domain == "fisheye" else position_maps(self.image_size)
             chans.append(geom)
 
         x = np.concatenate(chans, axis=2).transpose(2, 0, 1)
