@@ -12,7 +12,9 @@ condaenv.*.requirements.txt
 data/
 homework2.zip
 outputs/
+outputs_rectified/
 checkpoints/
+checkpoints_rectified/
 
 # Downloaded model weights and third-party clones
 *.pt
