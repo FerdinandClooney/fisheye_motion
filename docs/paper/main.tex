@@ -5,7 +5,7 @@
 \usepackage{fontspec}
 \setmainfont{DejaVu Sans}
 \setsansfont{DejaVu Sans}
-\newfontfamily\cjkfont{Droid Sans Fallback}
+\newfontfamily\cjkfont{WenQuanYi Micro Hei}
 \XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip=0pt plus 1pt
 \usepackage{graphicx}
@@ -28,7 +28,7 @@
 \titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
 
 \title{\vspace{-1.0em}\bfseries FisheyeMotion: {\cjkfont 面向鱼眼视频运动区域抽象的多源深度证据融合与双路线评估}}
-\author{Zhuang Jiahan\\Tongji University\\\texttt{https://github.com/FerdinandClooney/fisheye\_motion}}
+\author{{\cjkfont 2354265 庄嘉瀚 \quad 2351745 张巍瀚}\\{\cjkfont 同济大学}}
 \date{}
 
 \begin{document}
@@ -36,7 +36,7 @@
 \vspace{-1.1em}
 
 \begin{abstract}
-{\cjkfont 鱼眼视频以大视场覆盖换取强非线性投影畸变，使同一三维运动在图像中心与边缘呈现显著不同的尺度、边界和光流统计。本文提出} \textbf{FisheyeMotion}{\cjkfont ，一个面向相邻鱼眼帧运动区域抽象与短时目标跟踪的} GPU {\cjkfont 深度学习系统。系统融合} RAFT {\cjkfont 光流、}YOLO26-seg {\cjkfont 实例先验、}DINOv2 {\cjkfont 语义变化、边界提示、鱼眼几何编码、监督式} FisheyeMotionNet{\cjkfont 、测试时增强不确定性融合与} SAM2.1 {\cjkfont 掩膜细化。我们进一步实现两条可复现实验路线：直接在原始鱼眼域处理，以及先校正再反投影回鱼眼域评估。完整} pipeline {\cjkfont 在} 130 {\cjkfont 个有效样本上完成特征缓存、训练、消融、区域评估和路线对比；测试集包含} 19 {\cjkfont 个样本。最新运行显示，原始鱼眼域完整模型取得} IoU 0.2959{\cjkfont 、}Precision 0.3352{\cjkfont 、}Recall 0.5941{\cjkfont 、}F1 0.3758{\cjkfont ，显著优于} FrameDiff{\cjkfont 、}Farneback {\cjkfont 和} RAFT-only{\cjkfont ，并在边缘区域达到} F1 0.2916{\cjkfont 。与之相比，校正路线完整模型} F1 {\cjkfont 仅为} 0.0883{\cjkfont ，说明在本数据规模和当前反投影误差下，保持原始鱼眼域并显式注入几何先验比前置校正更可靠。}
+{\cjkfont 鱼眼视频以大视场覆盖换取强非线性投影畸变，使同一三维运动在图像中心与边缘呈现显著不同的尺度、边界和光流统计。本文提出} \textbf{FisheyeMotion}{\cjkfont ，一个面向相邻鱼眼帧运动区域抽象与短时目标跟踪的} GPU {\cjkfont 深度学习系统。系统融合} RAFT {\cjkfont 光流、}YOLO26-seg {\cjkfont 实例先验、}DINOv2 {\cjkfont 语义变化、边界提示、鱼眼几何编码、监督式} FisheyeMotionNet{\cjkfont 、测试时增强不确定性融合与} SAM2.1 {\cjkfont 掩膜细化。针对课程要求中的两种技术路线，我们分别实现原始鱼眼域处理与校正域处理，并将校正域预测反投影回鱼眼域进行公平评估。实验在} 130 {\cjkfont 个有效样本上完成训练、消融、区域评估和路线对比；测试集包含} 19 {\cjkfont 个样本。结果显示，原始鱼眼域完整模型取得} IoU 0.2959{\cjkfont 、}Precision 0.3352{\cjkfont 、}Recall 0.5941{\cjkfont 、}F1 0.3758{\cjkfont ，显著优于} FrameDiff{\cjkfont 、}Farneback {\cjkfont 和} RAFT-only{\cjkfont ，并在边缘区域达到} F1 0.2916{\cjkfont 。与之相比，校正路线完整模型} F1 {\cjkfont 为} 0.0883{\cjkfont ，说明在本数据规模和当前反投影误差下，保持原始鱼眼域并显式注入几何先验比前置校正更可靠。}
 \end{abstract}
 
 \section{{\cjkfont 引言}}
@@ -46,7 +46,7 @@
 
 {\cjkfont 本文贡献如下：}
 \begin{itemize}
-  \item {\cjkfont 构建完整} GPU pipeline{\cjkfont ，覆盖数据校验、}RAFT/YOLO/DINO {\cjkfont 特征缓存、监督训练、}SAM2.1 {\cjkfont 细化、区域评估、短时跟踪和可复现脚本。}
+  \item {\cjkfont 构建完整} GPU {\cjkfont 实验流程，覆盖数据校验、}RAFT/YOLO/DINO {\cjkfont 特征缓存、监督训练、}SAM2.1 {\cjkfont 细化、区域评估、短时跟踪和可复现脚本。}
   \item {\cjkfont 提出多源证据融合的} FisheyeMotionNet{\cjkfont ，将} RGB pair{\cjkfont 、帧差、深度光流、实例} mask{\cjkfont 、语义变化、边界提示和鱼眼几何编码统一到监督分割框架。}
   \item {\cjkfont 实现原始鱼眼域与校正域两条路线，并在相同鱼眼} GT {\cjkfont 上公平比较，揭示当前任务中前置校正会显著损害最终掩膜质量。}
 \end{itemize}
@@ -105,17 +105,17 @@ S=w_nP_{net}+w_fP_{flow}+w_yP_{yolo}+w_dP_{dino}+w_eP_{edge}-w_uU.
 {\cjkfont 高置信点、运动连通域框和} YOLO {\cjkfont 框共同组成} SAM2.1 prompts{\cjkfont 。该设计使} SAM2.1 {\cjkfont 主要负责边界细化，运动属性仍由多源证据和监督网络决定。}
 
 \section{{\cjkfont 实验设置}}
-{\cjkfont 数据集为} \texttt{data/homework2}{\cjkfont ，包含当前帧、前一帧、}GT {\cjkfont 掩膜和鱼眼标定文件。最新完整运行共验证} 130 {\cjkfont 个完整样本，图像原始尺寸为} $1280\times966${\cjkfont 。训练}/{\cjkfont 验证}/{\cjkfont 测试比例为} 70/15/15{\cjkfont ，测试集} 19 {\cjkfont 个样本。所有深度模块均强制使用} GPU{\cjkfont ；本次运行环境为} NVIDIA GeForce RTX 3060 Laptop GPU{\cjkfont ，}PyTorch 2.11.0+cu128{\cjkfont 。完整命令为：}
+{\cjkfont 实验使用课程提供的鱼眼图像数据集，样本由当前帧、前一帧、}GT {\cjkfont 掩膜和鱼眼标定文件组成。共验证} 130 {\cjkfont 个完整样本，图像原始尺寸为} $1280\times966${\cjkfont 。训练}/{\cjkfont 验证}/{\cjkfont 测试比例为} 70/15/15{\cjkfont ，测试集} 19 {\cjkfont 个样本。所有深度模块均强制使用} GPU{\cjkfont ；实验环境为} NVIDIA GeForce RTX 3060 Laptop GPU{\cjkfont ，}PyTorch 2.11.0+cu128{\cjkfont 。实验流程可由以下命令复现：}
 \begin{center}
 \small\texttt{bash scripts/run\_full\_pipeline.sh}
 \end{center}
-{\cjkfont 该脚本依次执行数据校验、鱼眼域特征缓存、鱼眼域训练评估、校正域特征缓存、校正域训练评估、消融、区域评估和路线对比。}
+{\cjkfont 该脚本依次执行数据校验、鱼眼域训练评估、校正域训练评估、消融、区域评估和路线对比。}
 
 \section{{\cjkfont 结果}}
 \subsection{{\cjkfont 主结果}}
 \begin{table}[t]
 \centering
-\caption{{\cjkfont 原始鱼眼域测试集主结果。所有数值来自本次完整} pipeline {\cjkfont 生成的} \texttt{outputs/route\_comparison.csv}{\cjkfont 。}}
+\caption{{\cjkfont 原始鱼眼域测试集主结果。表中数值为固定测试集上的平均指标。}}
 \label{tab:fisheye-main}
 \resizebox{\columnwidth}{!}{
 \begin{tabular}{lcccc}
@@ -137,7 +137,7 @@ UncertaintyFusion & 0.2727 & 0.3595 & 0.4433 & 0.3596\\
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{../../outputs/figures/method_f1_bar.png}
+  \includegraphics[width=\columnwidth]{../figures/method_ranking.png}
   \caption{\textbf{{\cjkfont 鱼眼域方法} F1 {\cjkfont 对比。}} {\cjkfont 深度融合方法显著优于传统帧差、}Farneback {\cjkfont 和单独光流路线。}}
   \label{fig:method-f1}
 \end{figure}
@@ -166,7 +166,7 @@ Rectified & YOLO-only & 0.0498 & 0.0914 & 0.0708 & 0.0737\\
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{../../outputs/figures/route_comparison.png}
+  \includegraphics[width=\columnwidth]{../figures/route_comparison.png}
   \caption{\textbf{{\cjkfont 双路线} F1 {\cjkfont 对比。}} {\cjkfont 原始鱼眼域路线在多数方法上均优于先校正再反投影路线。}}
   \label{fig:route}
 \end{figure}
@@ -239,13 +239,13 @@ w/o YOLO & 0.0132 & 0.0000\\
 \end{figure}
 
 \section{{\cjkfont 讨论}}
-{\cjkfont 本次完整运行给出两个工程上重要的结论。第一，鱼眼运动分割的瓶颈不是单个模型是否足够强，而是证据之间如何约束。}YOLO-only {\cjkfont 能提供高召回但缺少运动性；}RAFT-only {\cjkfont 能提供运动但缺少实例和语义；}SAM2-FrameDiff {\cjkfont 受} prompt {\cjkfont 质量限制。第二，前置校正并非天然更优。校正能让图像局部更接近针孔视角，但也会改变纹理、边界和} mask {\cjkfont 对齐方式；当最终评估仍在鱼眼} GT {\cjkfont 上进行时，反投影误差会直接损害像素级指标。}
+{\cjkfont 实验给出两个重要结论。第一，鱼眼运动分割的瓶颈不是单个模型是否足够强，而是证据之间如何约束。}YOLO-only {\cjkfont 能提供高召回但缺少运动性；}RAFT-only {\cjkfont 能提供运动但缺少实例和语义；}SAM2-FrameDiff {\cjkfont 受} prompt {\cjkfont 质量限制。第二，前置校正并非天然更优。校正能让图像局部更接近针孔视角，但也会改变纹理、边界和} mask {\cjkfont 对齐方式；当最终评估仍在鱼眼} GT {\cjkfont 上进行时，反投影误差会直接损害像素级指标。}
 
 \section{{\cjkfont 局限与未来工作}}
 {\cjkfont 当前数据规模较小，测试集只有} 19 {\cjkfont 个样本，结论仍需在更多天气、光照和相机型号上验证。其次，跟踪评估主要是短时关联，尚未覆盖} IDF1{\cjkfont 、}HOTA {\cjkfont 或长时遮挡恢复。第三，}Full {\cjkfont 模型对} YOLO {\cjkfont 先验依赖较强，}w/o YOLO {\cjkfont 消融几乎失效。后续工作可引入长视频记忆网络、}DINO/SAM {\cjkfont 伪标签扩增、畸变感知} transformer decoder{\cjkfont ，以及联合优化校正域和鱼眼域的一致性约束。}
 
 \section{{\cjkfont 结论}}
-{\cjkfont 本文完成了一个可复现的鱼眼视频运动区域抽象系统。最新完整} pipeline {\cjkfont 表明，在本数据集和当前实现下，直接在原始鱼眼域处理并显式加入几何编码，是优于先校正再反投影的路线。完整模型在综合} F1{\cjkfont 、召回率和边缘区域} F1 {\cjkfont 上均显著优于传统} baseline{\cjkfont ，证明多源深度证据融合是处理鱼眼运动分割问题的有效方向。}
+{\cjkfont 本文完成了一个可复现的鱼眼视频运动区域抽象系统。实验表明，在本数据集和当前实现下，直接在原始鱼眼域处理并显式加入几何编码，是优于先校正再反投影的路线。完整模型在综合} F1{\cjkfont 、召回率和边缘区域} F1 {\cjkfont 上均显著优于传统} baseline{\cjkfont ，证明多源深度证据融合是处理鱼眼运动分割问题的有效方向。}
 
 \bibliographystyle{plain}
 \bibliography{references}
